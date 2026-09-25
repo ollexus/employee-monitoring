@@ -18,6 +18,7 @@ public sealed class ClientSession
     private bool _screenshotLocked;
     private int _screenshotFailures;
     private DateTime? _lastSeenUtc;
+    private DateTime? _lastActivityUtc;
     private DateTime? _connectedAtUtc;
     private DateTime? _disconnectedAtUtc;
 
@@ -146,6 +147,18 @@ public sealed class ClientSession
                 {
                     _screenshotAtUtc ??= Normalize(heartbeat.LastScreenshotAtUtc.Value);
                 }
+
+                // Время последней активности сотрудника: агент сообщает момент последнего
+                // ввода. Для старых агентов без этого поля берётся текущий момент,
+                // а при длительном бездействии значение больше не обновляется.
+                if (heartbeat.LastInputAtUtc is DateTime inputAtUtc)
+                {
+                    _lastActivityUtc = Normalize(inputAtUtc);
+                }
+                else if (heartbeat.IdleSeconds < 60 || _lastActivityUtc is null)
+                {
+                    _lastActivityUtc = _lastSeenUtc;
+                }
             }
         }
     }
@@ -212,6 +225,7 @@ public sealed class ClientSession
                 ConnectedAtUtc = _connectedAtUtc,
                 DisconnectedAtUtc = _disconnectedAtUtc,
                 LastSeenUtc = _lastSeenUtc,
+                LastActivityUtc = _lastActivityUtc,
                 LastHeartbeatUtc = _lastHeartbeat?.SentAtUtc,
                 IdleSeconds = _lastHeartbeat?.IdleSeconds ?? 0,
                 ActiveWindowTitle = _lastHeartbeat?.ActiveWindowTitle ?? string.Empty,
@@ -253,6 +267,7 @@ public sealed class ClientSnapshot
     public DateTime? ConnectedAtUtc { get; init; }
     public DateTime? DisconnectedAtUtc { get; init; }
     public DateTime? LastSeenUtc { get; init; }
+    public DateTime? LastActivityUtc { get; init; }
     public DateTime? LastHeartbeatUtc { get; init; }
     public int IdleSeconds { get; init; }
     public string ActiveWindowTitle { get; init; } = string.Empty;

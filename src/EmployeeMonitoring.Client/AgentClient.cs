@@ -540,7 +540,7 @@ internal sealed class AgentClient : IAsyncDisposable
         {
             ClientId = _options.ClientId,
             MachineName = Environment.MachineName,
-            Domain = Environment.UserDomainName,
+            Domain = DomainInfo.GetDomainName(),
             UserName = Environment.UserName,
             OsDescription = Environment.OSVersion.VersionString,
             AgentVersion = AgentInfo.Version,

@@ -102,11 +102,15 @@ internal static class SystemActivity
     public static Heartbeat CreateHeartbeat(string clientId, DateTime? lastScreenshotUtc, bool screenLocked, int failures, string status)
     {
         (long used, long total) = GetMemory();
+        DateTime now = DateTime.UtcNow;
+        int idle = IdleSeconds;
+
         return new Heartbeat
         {
             ClientId = clientId,
-            SentAtUtc = DateTime.UtcNow,
-            IdleSeconds = IdleSeconds,
+            SentAtUtc = now,
+            IdleSeconds = idle,
+            LastInputAtUtc = now.AddSeconds(-Math.Min(idle, 7 * 24 * 3600)),
             ActiveWindowTitle = Trim(ActiveWindowTitle, 400),
             ActiveProcessName = Trim(ActiveProcessName, 120),
             CpuLoadPercent = Math.Round(CpuLoadPercent, 1),

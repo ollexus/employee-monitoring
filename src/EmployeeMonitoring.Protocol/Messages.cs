@@ -33,6 +33,10 @@ public sealed class Heartbeat
     public string ClientId { get; set; } = string.Empty;
     public DateTime SentAtUtc { get; set; } = DateTime.UtcNow;
     public int IdleSeconds { get; set; }
+
+    /// <summary>Момент последнего действия пользователя (ввод с клавиатуры или мыши).</summary>
+    public DateTime? LastInputAtUtc { get; set; }
+
     public string ActiveWindowTitle { get; set; } = string.Empty;
     public string ActiveProcessName { get; set; } = string.Empty;
     public double CpuLoadPercent { get; set; }

@@ -46,13 +46,8 @@ function showFileProtocolWarning() {
     const hint = document.createElement("div");
     hint.className = "fatal";
     hint.innerHTML = [
-        "<h2>Панель открыта как локальный файл</h2>",
-        "<p>Браузер запрещает запросы к серверу со страниц, открытых по протоколу <code>file://</code>, " +
-        "поэтому список клиентов не загружается.</p>",
-        "<p>Откройте панель по адресу, который выводит сервер при запуске:</p>",
-        '<p class="url">http://' + host + ":5080/</p>",
-        "<p>Подсказка: выполните <code>dotnet run --project src/EmployeeMonitoring.Server</code> " +
-        "и откройте эту ссылку в том же браузере.</p>"
+        "<h2>Нет связи с сервером</h2>",
+        '<p class="url">http://' + host + ":5080/</p>"
     ].join("");
     document.body.appendChild(hint);
 }
@@ -201,9 +196,10 @@ function createRow(client) {
     tdResources.append(cpu, memory);
 
     const seen = document.createElement("div");
-    const uptime = document.createElement("div");
-    uptime.className = "muted";
-    tdSeen.append(seen, uptime);
+    const link = document.createElement("div");
+    link.className = "muted";
+    tdSeen.append(seen, link);
+    tdSeen.className = "col-activity";
 
     const actions = document.createElement("div");
     actions.className = "actions";
@@ -223,7 +219,7 @@ function createRow(client) {
 
     return {
         tr, tdStatus, tdMachine, tdDomain, tdUser, tdIp, tdActivity,
-        windowTitle, activityMeta, idle, cpu, memory, seen, uptime,
+        windowTitle, activityMeta, idle, cpu, memory, seen, link,
         tdShot, shotButton, openButton, removeButton, shotStamp: null, shotNode: null
     };
 }
@@ -262,8 +258,11 @@ function updateRow(row, client) {
     row.cpu.textContent = "CPU " + (client.cpuLoadPercent || 0).toFixed(0) + " %";
     row.memory.textContent = "ОЗУ " + formatBytes(client.usedMemoryBytes) + " / " + formatBytes(client.totalMemoryBytes);
 
-    row.seen.textContent = formatDateTime(client.lastSeenUtc);
-    row.uptime.textContent = client.uptimeSeconds ? "работает: " + formatDuration(client.uptimeSeconds) : "";
+    row.seen.textContent = formatDateTime(client.lastActivityUtc);
+    row.seen.title = client.lastActivityUtc
+        ? "Последнее действие сотрудника: " + new Date(client.lastActivityUtc).toLocaleString("ru-RU")
+        : "Данных о действиях сотрудника ещё нет";
+    row.link.textContent = "связь: " + formatDateTime(client.lastSeenUtc);
 
     row.shotButton.disabled = !client.isOnline;
     row.openButton.disabled = !client.hasScreenshot;
@@ -376,10 +375,12 @@ function detailPairs(client) {
         ["Активное окно", client.activeWindowTitle || "—"],
         ["Процесс", client.activeProcessName || "—"],
         ["Бездействие", formatDuration(client.idleSeconds)],
+        ["Последняя активность", formatDateTime(client.lastActivityUtc)],
+        ["Последняя связь", formatDateTime(client.lastSeenUtc)],
+        ["В сети с", formatDateTime(client.connectedAtUtc)],
         ["CPU", (client.cpuLoadPercent || 0).toFixed(1) + " %"],
         ["ОЗУ", formatBytes(client.usedMemoryBytes) + " / " + formatBytes(client.totalMemoryBytes)],
-        ["В сети с", formatDateTime(client.connectedAtUtc)],
-        ["Последняя связь", formatDateTime(client.lastSeenUtc)],
+        ["Время работы агента", client.uptimeSeconds ? formatDuration(client.uptimeSeconds) : "—"],
         ["Последний снимок", formatDateTime(client.screenshotAtUtc)],
         ["Разрешение снимка", client.screenshotWidth && client.screenshotHeight ? `${client.screenshotWidth}×${client.screenshotHeight}` : "—"],
         ["Мониторов", client.screenCount],

@@ -71,11 +71,15 @@ internal static class DemoMode
 
                 while (!token.IsCancellationRequested)
                 {
+                    DateTime now = DateTime.UtcNow;
+                    int idleSeconds = Random.Shared.Next(0, 90);
+
                     await agent.SendHeartbeatAsync(new Heartbeat
                     {
                         ClientId = $"fake-{machine}",
-                        SentAtUtc = DateTime.UtcNow,
-                        IdleSeconds = Random.Shared.Next(0, 90),
+                        SentAtUtc = now,
+                        IdleSeconds = idleSeconds,
+                        LastInputAtUtc = now.AddSeconds(-idleSeconds),
                         ActiveWindowTitle = PickWindow(),
                         ActiveProcessName = PickProcess(),
                         CpuLoadPercent = Math.Round(Random.Shared.NextDouble() * 70, 1),

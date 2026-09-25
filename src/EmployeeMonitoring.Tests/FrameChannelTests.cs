@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using System.Text;
 using EmployeeMonitoring.Protocol;
 
@@ -157,14 +158,69 @@ public static class FrameChannelTests
         Assert.BytesEqual(jpeg, frame!.Value.Payload);
     }
 
+    /// <summary>
+    /// Отмена чтения проверяется на настоящем сокете: сервер принял подключение,
+    /// но не прислал ни байта — чтение должно прерваться по токену.
+    /// </summary>
     [Test]
-    public static async Task CancellationStopsWaiting()
+    public static async Task CancellationStopsWaitingForDataOnRealSocket()
     {
-        using var stream = new NeverEndingStream();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+        var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
-            () => FrameChannel.ReadAsync(stream, ProtocolConstants.MaxPayloadBytes, cts.Token));
+        using var client = new TcpClient();
+        await client.ConnectAsync("127.0.0.1", port).ConfigureAwait(false);
+        using TcpClient accepted = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
+        using NetworkStream stream = client.GetStream();
+
+        var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
+        Task<Frame?> reading = FrameChannel.ReadAsync(stream, ProtocolConstants.MaxPayloadBytes, cts.Token);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await reading.ConfigureAwait(false));
+
+        cts.Dispose();
+        listener.Stop();
+    }
+
+    /// <summary>Данные, пришедшие двумя сетевыми порциями, собираются в один кадр.</summary>
+    [Test]
+    public static async Task FrameIsAssembledFromTwoNetworkPackets()
+    {
+        var listener = new TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+
+        using var client = new TcpClient { NoDelay = true };
+        await client.ConnectAsync("127.0.0.1", port).ConfigureAwait(false);
+        using TcpClient accepted = await listener.AcceptTcpClientAsync().ConfigureAwait(false);
+
+        using NetworkStream clientStream = client.GetStream();
+        using NetworkStream serverStream = accepted.GetStream();
+
+        byte[] payload = new byte[3000];
+        Random.Shared.NextBytes(payload);
+
+        byte[] packet = new byte[5 + payload.Length];
+        packet[0] = (byte)FrameType.ScreenshotData;
+        System.Buffers.Binary.BinaryPrimitives.WriteInt32BigEndian(packet.AsSpan(1, 4), payload.Length);
+        payload.CopyTo(packet, 5);
+
+        Task sender = Task.Run(async () =>
+        {
+            await serverStream.WriteAsync(packet.AsMemory(0, 3)).ConfigureAwait(false);
+            await Task.Delay(50).ConfigureAwait(false);
+            await serverStream.WriteAsync(packet.AsMemory(3)).ConfigureAwait(false);
+        });
+
+        Frame? frame = await FrameChannel.ReadAsync(clientStream, ProtocolConstants.MaxPayloadBytes, CancellationToken.None).ConfigureAwait(false);
+
+        Assert.NotNull(frame, "кадр из двух сетевых пакетов не собран");
+        Assert.Equal(FrameType.ScreenshotData, frame!.Value.Type);
+        Assert.BytesEqual(payload, frame.Value.Payload);
+
+        await sender.ConfigureAwait(false);
+        listener.Stop();
     }
 
     private sealed class FragmentedStream(byte[] data, int chunkSize) : Stream
@@ -207,32 +263,6 @@ public static class FrameChannelTests
             data.AsSpan(_position, length).CopyTo(buffer.Span);
             _position += length;
             return ValueTask.FromResult(length);
-        }
-
-        public override void Flush()
-        {
-        }
-
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    }
-
-    private sealed class NeverEndingStream : Stream
-    {
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => throw new NotSupportedException();
-        public override long Position { get => 0; set => throw new NotSupportedException(); }
-
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-
-        /// <summary>Поток никогда не возвращает данные, но уважает отмену.</summary>
-        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
-        {
-            await Task.Delay(Timeout.Infinite, cancellationToken).ConfigureAwait(false);
-            return 0;
         }
 
         public override void Flush()

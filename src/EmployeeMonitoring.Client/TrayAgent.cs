@@ -147,7 +147,8 @@ internal sealed class TrayAgent : ApplicationContext
         _statusForm?.UpdateState();
     }
 
-    private void Notify(string title, string text)    {
+    private void Notify(string title, string text)
+    {
         if (!_options.ShowTrayNotifications)
         {
             return;
