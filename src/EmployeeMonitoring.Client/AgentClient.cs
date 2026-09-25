@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.NetworkInformation;
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using EmployeeMonitoring.Protocol;
 
@@ -16,6 +17,8 @@ internal enum ConnectionState
 
 internal sealed class AgentClient : IAsyncDisposable
 {
+    private static readonly TimeSpan SessionTeardownTimeout = TimeSpan.FromSeconds(3);
+
     private readonly ClientOptions _options;
     private readonly Func<string, bool> _notificationSink;
     private readonly SemaphoreSlim _captureSignal = new(0);
@@ -24,11 +27,14 @@ internal sealed class AgentClient : IAsyncDisposable
     private TcpClient? _client;
     private NetworkStream? _stream;
     private CancellationTokenSource? _sessionCts;
+    private readonly object _stateSync = new();
 
     private int _screenshotFailures;
     private bool _screenLocked;
     private DateTime _nextCaptureAtUtc = DateTime.MinValue;
     private int _droppedFrames;
+    private long _lastIoTicks;
+    private long _lastScreenshotTicks;
 
     public AgentClient(ClientOptions options, Func<string, bool> notificationSink)
     {
@@ -40,6 +46,8 @@ internal sealed class AgentClient : IAsyncDisposable
             SingleWriter = false,
             FullMode = BoundedChannelFullMode.DropOldest
         });
+
+        Volatile.Write(ref _lastIoTicks, DateTime.UtcNow.Ticks);
     }
 
     public event Action<string>? StatusChanged;
@@ -50,7 +58,15 @@ internal sealed class AgentClient : IAsyncDisposable
 
     public string StatusText { get; private set; } = "Не запущено";
 
-    public DateTime? LastScreenshotUtc { get; private set; }
+    /// <summary>Время фактической отправки последнего снимка (а не только его подготовки).</summary>
+    public DateTime? LastScreenshotUtc
+    {
+        get
+        {
+            long ticks = Interlocked.Read(ref _lastScreenshotTicks);
+            return ticks == 0 ? null : new DateTime(ticks, DateTimeKind.Utc);
+        }
+    }
 
     public DateTime? LastHeartbeatUtc { get; private set; }
 
@@ -60,6 +76,9 @@ internal sealed class AgentClient : IAsyncDisposable
 
     public int DroppedFrames => Volatile.Read(ref _droppedFrames);
 
+    /// <summary>true, если хотя бы один снимок действительно отправлен серверу.</summary>
+    public bool HasSentScreenshot => Interlocked.Read(ref _lastScreenshotTicks) != 0;
+
     public void TriggerCapture()
     {
         if (_captureSignal.CurrentCount == 0)
@@ -68,6 +87,10 @@ internal sealed class AgentClient : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Основной цикл: подключение, работа сессии и гарантированное восстановление связи.
+    /// Внутри цикла нет ни одной точки, способной его прервать, кроме внешней отмены.
+    /// </summary>
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         int delaySeconds = _options.ReconnectMinSeconds;
@@ -87,19 +110,21 @@ internal sealed class AgentClient : IAsyncDisposable
             catch (Exception ex)
             {
                 AgentLog.Warn($"Соединение с сервером прервано: {ex.Message}");
-                SetState(ConnectionState.Disconnected, $"Нет связи с сервером ({ex.Message})");
+                SetState(ConnectionState.Disconnected, $"Нет связи с сервером ({Short(ex.Message)})");
             }
-            finally
-            {
-                CleanupSession();
-            }
+
+            TryCleanupSession();
+            Volatile.Write(ref _lastIoTicks, 0);
 
             if (cancellationToken.IsCancellationRequested)
             {
                 break;
             }
 
-            SetState(ConnectionState.Disconnected, $"Повтор подключения через {delaySeconds} с");
+            DateTime nextAttempt = DateTime.Now.AddSeconds(delaySeconds);
+            AgentLog.Info($"Повтор подключения через {delaySeconds} с (следующая попытка в {nextAttempt:HH:mm:ss})");
+            SetState(ConnectionState.Disconnected, $"Нет связи с сервером, повтор в {nextAttempt:HH:mm:ss}");
+
             try
             {
                 await Task.Delay(TimeSpan.FromSeconds(delaySeconds), cancellationToken).ConfigureAwait(false);
@@ -112,30 +137,41 @@ internal sealed class AgentClient : IAsyncDisposable
             delaySeconds = Math.Min(delaySeconds * 2, _options.ReconnectMaxSeconds);
         }
 
+        TryCleanupSession();
         SetState(ConnectionState.Disconnected, "Остановлено");
+        AgentLog.Info("Цикл связи остановлен");
     }
 
     private async Task RunSessionAsync(CancellationToken cancellationToken)
     {
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeoutCts.CancelAfter(TimeSpan.FromSeconds(_options.ConnectTimeoutSeconds));
-
         var client = new TcpClient { NoDelay = true };
+        EnableKeepAlive(client);
         _client = client;
 
-        using (timeoutCts.Token.Register(() =>
+        try
         {
-            try
+            using (var connectCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
             {
-                client.Close();
+                connectCts.CancelAfter(TimeSpan.FromSeconds(_options.ConnectTimeoutSeconds));
+                using CancellationTokenRegistration registration = connectCts.Token.Register(() =>
+                {
+                    try
+                    {
+                        client.Close();
+                    }
+                    catch (Exception)
+                    {
+                        // Отмена подключения.
+                    }
+                });
+
+                await client.ConnectAsync(_options.ServerHost, _options.ServerPort, connectCts.Token).ConfigureAwait(false);
             }
-            catch (Exception)
-            {
-                // Игнорируем: отмена подключения.
-            }
-        }))
+        }
+        catch
         {
-            await client.ConnectAsync(_options.ServerHost, _options.ServerPort, timeoutCts.Token).ConfigureAwait(false);
+            client.Dispose();
+            throw;
         }
 
         NetworkStream stream = client.GetStream();
@@ -145,10 +181,14 @@ internal sealed class AgentClient : IAsyncDisposable
         _sessionCts = sessionCts;
         CancellationToken token = sessionCts.Token;
 
+        Volatile.Write(ref _lastIoTicks, DateTime.UtcNow.Ticks);
+
         await FrameChannel.WriteAsync(stream, FrameType.Auth, BuildAuthRequest(), token).ConfigureAwait(false);
+        Touch();
 
         Frame? authFrame = await FrameChannel.ReadAsync(stream, ProtocolConstants.MaxPayloadBytes, token).ConfigureAwait(false)
             ?? throw new IOException("Сервер закрыл соединение до завершения авторизации.");
+        Touch();
 
         if (authFrame.Value.Type != FrameType.AuthResult)
         {
@@ -179,8 +219,45 @@ internal sealed class AgentClient : IAsyncDisposable
         Task reader = ReadLoopAsync(stream, token);
         Task heartbeats = HeartbeatLoopAsync(heartbeatSeconds, token);
         Task captures = CaptureLoopAsync(captureSeconds, token);
+        Task watchdog = WatchdogAsync(heartbeatSeconds, token);
 
-        await Task.WhenAll(writer, reader, heartbeats, captures).ConfigureAwait(false);
+        Task[] loops = [writer, reader, heartbeats, captures, watchdog];
+
+        // Сессия завершается, как только завершится ЛЮБОЙ из циклов: иначе зависшее
+        // чтение в сокете заблокировало бы и сторож, и переподключение.
+        Task firstFinished = await Task.WhenAny(loops).ConfigureAwait(false);
+
+        Exception? failure = null;
+        try
+        {
+            await firstFinished.ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            failure = ex;
+        }
+        finally
+        {
+            // Сокет закрывается первым — это освобождает поток чтения, если сервер пропал.
+            TryCancel(sessionCts);
+            try
+            {
+                stream.Dispose();
+            }
+            catch (Exception ex)
+            {
+                AgentLog.Debug($"Ошибка закрытия сокета: {ex.Message}");
+            }
+
+            // Зависшие задачи не должны блокировать переподключение.
+            await Task.WhenAny(Task.WhenAll(loops), Task.Delay(SessionTeardownTimeout, CancellationToken.None)).ConfigureAwait(false);
+            TryCleanupSession();
+        }
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
+        }
     }
 
     private async Task WriteLoopAsync(NetworkStream stream, CancellationToken token)
@@ -188,26 +265,71 @@ internal sealed class AgentClient : IAsyncDisposable
         await foreach (OutgoingFrame frame in _outgoing.Reader.ReadAllAsync(token).ConfigureAwait(false))
         {
             await FrameChannel.WriteRawAsync(stream, frame.Type, frame.Payload, token).ConfigureAwait(false);
+            Touch();
+
+            if (frame.OnSent is Action callback)
+            {
+                try
+                {
+                    callback();
+                }
+                catch (Exception ex)
+                {
+                    AgentLog.Debug($"Ошибка обработчика отправки: {ex.Message}");
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Сторож сессии: если по сокету долго нет обмена (например, сервер «завис»),
+    /// сессия принудительно завершается и цикл переподключения запускает её заново.
+    /// </summary>
+    private async Task WatchdogAsync(int heartbeatSeconds, CancellationToken token)
+    {
+        TimeSpan limit = TimeSpan.FromSeconds(Math.Clamp(heartbeatSeconds * 2 + 10, 25, 300));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+
+        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+        {
+            long ticks = Volatile.Read(ref _lastIoTicks);
+            if (ticks == 0)
+            {
+                continue;
+            }
+
+            TimeSpan silence = DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc);
+            if (silence > limit)
+            {
+                throw new TimeoutException($"Нет обмена данными с сервером более {limit.TotalSeconds:0} с");
+            }
         }
     }
 
     private async Task HeartbeatLoopAsync(int intervalSeconds, CancellationToken token)
     {
+        SendHeartbeat();
+
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(intervalSeconds));
         while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
         {
-            SystemActivity.SampleCpuLoad();
-            Heartbeat heartbeat = SystemActivity.CreateHeartbeat(
-                _options.ClientId,
-                LastScreenshotUtc,
-                _screenLocked,
-                _screenshotFailures,
-                State.ToString());
+            SendHeartbeat();
+        }
+    }
 
-            if (TryEnqueue(FrameType.Heartbeat, Json.Serialize(heartbeat)))
-            {
-                LastHeartbeatUtc = DateTime.UtcNow;
-            }
+    private void SendHeartbeat()
+    {
+        SystemActivity.SampleCpuLoad();
+        Heartbeat heartbeat = SystemActivity.CreateHeartbeat(
+            _options.ClientId,
+            LastScreenshotUtc,
+            _screenLocked,
+            _screenshotFailures,
+            State.ToString());
+
+        if (TryEnqueue(FrameType.Heartbeat, Json.Serialize(heartbeat), null))
+        {
+            LastHeartbeatUtc = DateTime.UtcNow;
         }
     }
 
@@ -241,6 +363,7 @@ internal sealed class AgentClient : IAsyncDisposable
             }
 
             _nextCaptureAtUtc = DateTime.UtcNow.AddSeconds(intervalSeconds);
+
             try
             {
                 await CaptureAndSendAsync(byCommand, token).ConfigureAwait(false);
@@ -258,7 +381,7 @@ internal sealed class AgentClient : IAsyncDisposable
         }
     }
 
-    public async Task CaptureAndSendAsync(bool byCommand, CancellationToken token)
+    private async Task CaptureAndSendAsync(bool byCommand, CancellationToken token)
     {
         CaptureResult capture = await Task.Run(
             () => ScreenCapture.Capture(_options.MaxScreenshotWidth, _options.JpegQuality),
@@ -270,7 +393,7 @@ internal sealed class AgentClient : IAsyncDisposable
         {
             // При заблокированном рабочем столе снимок бесполезен: сообщаем только метаданные.
             AgentLog.Info("Рабочий стол заблокирован — изображение не передаётся");
-            if (!TryEnqueue(FrameType.ScreenshotMeta, Json.Serialize(new ScreenshotMeta
+            TryEnqueue(FrameType.ScreenshotMeta, Json.Serialize(new ScreenshotMeta
             {
                 ClientId = _options.ClientId,
                 Width = capture.Width,
@@ -279,10 +402,7 @@ internal sealed class AgentClient : IAsyncDisposable
                 ScreenLocked = true,
                 TriggeredByCommand = byCommand,
                 WindowTitle = capture.WindowTitle
-            })))
-            {
-                AgentLog.Warn("Очередь отправки переполнена, метаданные снимка отброшены");
-            }
+            }), null);
 
             return;
         }
@@ -298,25 +418,26 @@ internal sealed class AgentClient : IAsyncDisposable
             WindowTitle = capture.WindowTitle
         };
 
-        if (!TryEnqueue(FrameType.ScreenshotMeta, Json.Serialize(meta)))
+        if (!TryEnqueue(FrameType.ScreenshotMeta, Json.Serialize(meta), null))
         {
             AgentLog.Warn("Очередь отправки переполнена, метаданные снимка отброшены");
             return;
         }
 
-        if (!TryEnqueue(FrameType.ScreenshotData, capture.Jpeg))
+        void OnSent()
         {
-            AgentLog.Warn("Очередь отправки переполнена, изображение снимка отброшено");
-            return;
+            _screenshotFailures = 0;
+            Interlocked.Exchange(ref _lastScreenshotTicks, DateTime.UtcNow.Ticks);
+            AgentLog.Info($"Снимок экрана отправлен: {meta.Width}x{meta.Height}, {meta.SizeBytes / 1024} КБ" +
+                          (byCommand ? " (по команде с сервера)" : string.Empty));
+            _notificationSink("Снимок экрана передан на сервер мониторинга");
+            ScreenshotSent?.Invoke();
         }
 
-        _screenshotFailures = 0;
-        LastScreenshotUtc = DateTime.UtcNow;
-        AgentLog.Info($"Снимок экрана {meta.Width}x{meta.Height}, {meta.SizeBytes / 1024} КБ" +
-                      (byCommand ? " (по команде с сервера)" : string.Empty));
-
-        _notificationSink("Снимок экрана передан на сервер мониторинга");
-        ScreenshotSent?.Invoke();
+        if (!TryEnqueue(FrameType.ScreenshotData, capture.Jpeg, OnSent))
+        {
+            AgentLog.Warn("Очередь отправки переполнена, изображение снимка отброшено");
+        }
     }
 
     private async Task ReadLoopAsync(NetworkStream stream, CancellationToken token)
@@ -329,18 +450,18 @@ internal sealed class AgentClient : IAsyncDisposable
                 throw new IOException("Соединение закрыто сервером.");
             }
 
+            Touch();
+
             if (frame.Value.Type != FrameType.Command)
             {
                 continue;
             }
 
             var command = Json.Deserialize<AgentCommand>(frame.Value.Payload);
-            if (command is null)
+            if (command is not null)
             {
-                continue;
+                await HandleCommandAsync(command, token).ConfigureAwait(false);
             }
-
-            await HandleCommandAsync(command, token).ConfigureAwait(false);
         }
     }
 
@@ -388,12 +509,12 @@ internal sealed class AgentClient : IAsyncDisposable
             ack.Message = ex.Message;
         }
 
-        TryEnqueue(FrameType.CommandAck, Json.Serialize(ack));
+        TryEnqueue(FrameType.CommandAck, Json.Serialize(ack), null);
     }
 
-    private bool TryEnqueue(FrameType type, byte[] payload)
+    private bool TryEnqueue(FrameType type, byte[] payload, Action? onSent)
     {
-        if (_outgoing.Writer.TryWrite(new OutgoingFrame(type, payload)))
+        if (_outgoing.Writer.TryWrite(new OutgoingFrame(type, payload, onSent)))
         {
             return true;
         }
@@ -409,12 +530,12 @@ internal sealed class AgentClient : IAsyncDisposable
             return;
         }
 
-        TryEnqueue(FrameType.Log, Json.Serialize(new AgentLogEntry { Level = level, Message = message }));
+        TryEnqueue(FrameType.Log, Json.Serialize(new AgentLogEntry { Level = level, Message = message }), null);
     }
 
     private AuthRequest BuildAuthRequest()
     {
-        (int width, int height, int monitors) = ScreenCapture.DescribeScreen();
+        int monitors = ScreenCapture.DescribeScreen().Count;
         return new AuthRequest
         {
             ClientId = _options.ClientId,
@@ -426,7 +547,7 @@ internal sealed class AgentClient : IAsyncDisposable
             MacAddress = GetPrimaryMacAddress(),
             SessionId = Process.GetCurrentProcess().SessionId,
             ScreenCount = monitors,
-            StartedAtUtc = Process.GetCurrentProcess().StartTime.ToUniversalTime(),
+            StartedAtUtc = SystemActivity.GetProcessStartUtc(),
             ProtocolVersion = 1,
             Token = _options.Token
         };
@@ -451,48 +572,78 @@ internal sealed class AgentClient : IAsyncDisposable
         }
         catch (Exception)
         {
-            // Игнорируем: MAC-адрес не критичен.
+            // MAC-адрес не критичен.
         }
 
         return string.Empty;
     }
 
-    private void CleanupSession()
+    /// <summary>Keepalive позволяет обнаружить исчезнувший сервер за десятки секунд, а не минутами.</summary>
+    private static void EnableKeepAlive(TcpClient client)
     {
         try
         {
-            _sessionCts?.Cancel();
+            client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveTime, 10);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveInterval, 5);
+            client.Client.SetSocketOption(SocketOptionLevel.Tcp, SocketOptionName.TcpKeepAliveRetryCount, 3);
         }
         catch (Exception)
         {
-            // Игнорируем.
+            // На части платформ параметры могут быть недоступны — не критично.
         }
+    }
 
-        _sessionCts?.Dispose();
-        _sessionCts = null;
+    private void Touch() => Volatile.Write(ref _lastIoTicks, DateTime.UtcNow.Ticks);
 
+    private void TryCancel(CancellationTokenSource? source)
+    {
         try
         {
-            _stream?.Dispose();
+            source?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Уже освобождён.
         }
         catch (Exception)
         {
             // Игнорируем.
         }
+    }
 
-        _stream = null;
-
-        try
+    private void TryCleanupSession()
+    {
+        lock (_stateSync)
         {
-            _client?.Close();
-        }
-        catch (Exception)
-        {
-            // Игнорируем.
-        }
+            TryCancel(_sessionCts);
+            _sessionCts?.Dispose();
+            _sessionCts = null;
 
-        _client = null;
-        ConnectedSinceUtc = null;
+            try
+            {
+                _stream?.Dispose();
+            }
+            catch (Exception)
+            {
+                // Игнорируем.
+            }
+
+            _stream = null;
+
+            try
+            {
+                _client?.Close();
+                _client?.Dispose();
+            }
+            catch (Exception)
+            {
+                // Игнорируем.
+            }
+
+            _client = null;
+            ConnectedSinceUtc = null;
+        }
     }
 
     private void SetState(ConnectionState state, string text)
@@ -502,15 +653,27 @@ internal sealed class AgentClient : IAsyncDisposable
         StatusChanged?.Invoke(text);
     }
 
+    private static string Short(string message)
+    {
+        if (string.IsNullOrEmpty(message))
+        {
+            return "нет данных";
+        }
+
+        int index = message.IndexOf(':', StringComparison.Ordinal);
+        string trimmed = index > 0 ? message[..index] : message;
+        return trimmed.Length <= 60 ? trimmed : trimmed[..60];
+    }
+
     public async ValueTask DisposeAsync()
     {
-        CleanupSession();
+        TryCleanupSession();
         _outgoing.Writer.TryComplete();
         _captureSignal.Dispose();
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private readonly record struct OutgoingFrame(FrameType Type, byte[] Payload);
+    private readonly record struct OutgoingFrame(FrameType Type, byte[] Payload, Action? OnSent);
 }
 
 internal static class AgentInfo

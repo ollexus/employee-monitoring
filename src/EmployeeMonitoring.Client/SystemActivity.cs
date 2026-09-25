@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using EmployeeMonitoring.Protocol;
 
@@ -6,6 +7,7 @@ namespace EmployeeMonitoring.Client;
 internal static class SystemActivity
 {
     private static readonly object SyncRoot = new();
+    private static DateTime? _processStartUtc;
     private static ulong _lastIdle;
     private static ulong _lastKernel;
     private static ulong _lastUser;
@@ -36,7 +38,30 @@ internal static class SystemActivity
         return ((long)info.TotalPhys - (long)info.AvailablePhys, (long)info.TotalPhys);
     }
 
-    public static long GetUptimeSeconds() => Environment.TickCount64 / 1000;
+    public static long GetUptimeSeconds() => (long)(DateTime.UtcNow - GetProcessStartUtc()).TotalSeconds;
+
+    /// <summary>Время запуска процесса агента (для отчёта об uptime на сервере).</summary>
+    public static DateTime GetProcessStartUtc()
+    {
+        if (_processStartUtc is not null)
+        {
+            return _processStartUtc.Value;
+        }
+
+        DateTime start;
+        try
+        {
+            using Process process = Process.GetCurrentProcess();
+            start = process.StartTime.ToUniversalTime();
+        }
+        catch (Exception)
+        {
+            start = DateTime.UtcNow;
+        }
+
+        _processStartUtc = start;
+        return start;
+    }
 
     /// <summary>Обновляет счётчик загрузки CPU на основе разницы значений GetSystemTimes.</summary>
     public static double SampleCpuLoad()

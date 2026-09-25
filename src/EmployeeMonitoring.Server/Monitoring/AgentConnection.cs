@@ -28,6 +28,7 @@ internal sealed class AgentConnection : IDisposable
     }
 
     private readonly long[] _commandTimestamps = new long[64];
+    private long _lastIoTicks = DateTime.UtcNow.Ticks;
 
     public async Task RunAsync(NetworkStream stream, CancellationToken stoppingToken)
     {
@@ -36,6 +37,7 @@ internal sealed class AgentConnection : IDisposable
         CancellationToken token = linked.Token;
 
         Task writer = WriteLoopAsync(stream, token);
+        Task watchdog = WatchdogAsync(token);
         ScreenshotMeta? pendingMeta = null;
 
         try
@@ -48,7 +50,7 @@ internal sealed class AgentConnection : IDisposable
                     break;
                 }
 
-                _session.Touch(null);
+                Touch();
 
                 switch (frame.Value.Type)
                 {
@@ -98,18 +100,65 @@ internal sealed class AgentConnection : IDisposable
         }
         finally
         {
+            // Сокет закрывается первым: это освобождает поток записи, если агент исчез.
             _outgoing.Writer.TryComplete();
             try
             {
-                await writer.ConfigureAwait(false);
+                _cts.Cancel();
             }
             catch (Exception)
             {
-                // Соединение уже разорвано.
+                // Игнорируем.
             }
+
+            try
+            {
+                stream.Dispose();
+            }
+            catch (Exception)
+            {
+                // Игнорируем.
+            }
+
+            // Ожидание ограничено по времени, чтобы «зависшая» задача не блокировала освобождение сессии.
+            await Task.WhenAny(Task.WhenAll(writer, watchdog), Task.Delay(TimeSpan.FromSeconds(3), CancellationToken.None))
+                .ConfigureAwait(false);
 
             _session.Detach(this);
         }
+    }
+
+    /// <summary>
+    /// Сторож соединения: если агент перестал присылать данные, соединение закрывается,
+    /// чтобы сессия считалась отключённой, а агент переподключался.
+    /// </summary>
+    private async Task WatchdogAsync(CancellationToken token)
+    {
+        TimeSpan limit = TimeSpan.FromSeconds(Math.Clamp(_options.HeartbeatSeconds * 3 + 15, 60, 900));
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(5));
+
+        while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+        {
+            long ticks = Volatile.Read(ref _lastIoTicks);
+            if (ticks == 0)
+            {
+                continue;
+            }
+
+            if (DateTime.UtcNow - new DateTime(ticks, DateTimeKind.Utc) > limit)
+            {
+                _logger.LogWarning("Нет данных от агента {Machine} более {Seconds} с, соединение закрывается",
+                    _session.MachineName, (int)limit.TotalSeconds);
+                _cts.Cancel();
+                return;
+            }
+        }
+    }
+
+    private void Touch()
+    {
+        Volatile.Write(ref _lastIoTicks, DateTime.UtcNow.Ticks);
+        _session.Touch(null);
     }
 
     private void HandleAck(byte[] payload)
@@ -148,6 +197,7 @@ internal sealed class AgentConnection : IDisposable
             await foreach (OutgoingFrame frame in _outgoing.Reader.ReadAllAsync(token).ConfigureAwait(false))
             {
                 await FrameChannel.WriteRawAsync(stream, frame.Type, frame.Payload, token).ConfigureAwait(false);
+                Touch();
             }
         }
         catch (OperationCanceledException)

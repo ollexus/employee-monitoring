@@ -37,6 +37,26 @@ const el = {
 
 const ACTIVE_IDLE_SECONDS = 300;
 
+if (window.location.protocol === "file:") {
+    showFileProtocolWarning();
+}
+
+function showFileProtocolWarning() {
+    const host = window.location.hostname || "localhost";
+    const hint = document.createElement("div");
+    hint.className = "fatal";
+    hint.innerHTML = [
+        "<h2>Панель открыта как локальный файл</h2>",
+        "<p>Браузер запрещает запросы к серверу со страниц, открытых по протоколу <code>file://</code>, " +
+        "поэтому список клиентов не загружается.</p>",
+        "<p>Откройте панель по адресу, который выводит сервер при запуске:</p>",
+        '<p class="url">http://' + host + ":5080/</p>",
+        "<p>Подсказка: выполните <code>dotnet run --project src/EmployeeMonitoring.Server</code> " +
+        "и откройте эту ссылку в том же браузере.</p>"
+    ].join("");
+    document.body.appendChild(hint);
+}
+
 document.addEventListener("DOMContentLoaded", () => {
     el.search.addEventListener("input", () => {
         state.filter = el.search.value.trim().toLowerCase();

@@ -151,20 +151,21 @@ internal static class Program
 
     private static int RunSingleCapture(ClientOptions options)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try
         {
             var client = new AgentClient(options, static _ => false);
             Task run = client.RunAsync(cts.Token);
 
-            while (!client.LastScreenshotUtc.HasValue && !cts.IsCancellationRequested)
+            // Ожидаем именно фактической отправки снимка, а не только его подготовки.
+            while (!client.HasSentScreenshot && !cts.IsCancellationRequested)
             {
                 Thread.Sleep(200);
             }
 
-            if (!client.LastScreenshotUtc.HasValue)
+            if (!client.HasSentScreenshot)
             {
-                Console.Error.WriteLine("Не удалось получить снимок: нет связи с сервером или истекло время ожидания.");
+                Console.Error.WriteLine("Снимок не отправлен: нет связи с сервером или истекло время ожидания.");
                 return 2;
             }
 
