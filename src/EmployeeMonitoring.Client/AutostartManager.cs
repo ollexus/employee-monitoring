@@ -13,31 +13,46 @@ internal static class AutostartManager
     public const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     public const string ValueName = "EmployeeMonitoringAgent";
 
-    public static bool IsEnabled()
+    public static bool IsEnabled() => !string.IsNullOrWhiteSpace(GetRegisteredCommand());
+
+    /// <summary>Команда, записанная в автозапуск, либо null, если записи нет.</summary>
+    public static string? GetRegisteredCommand()
     {
         using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-        return key?.GetValue(ValueName) is string value && !string.IsNullOrWhiteSpace(value);
+        return key?.GetValue(ValueName) as string;
     }
 
     public static bool Enable(string executablePath)
     {
-        using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
-            ?? throw new InvalidOperationException("Не удалось открыть ключ автозапуска.");
-
-        key.SetValue(ValueName, $"\"{executablePath}\"", RegistryValueKind.String);
+        SetRegisteredCommand($"\"{executablePath}\"");
         return true;
     }
 
     public static bool Disable()
     {
-        using RegistryKey? key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-        if (key?.GetValue(ValueName) is null)
+        if (IsEnabled())
         {
-            return false;
+            SetRegisteredCommand(null);
+            return true;
         }
 
-        key.DeleteValue(ValueName, throwOnMissingValue: false);
-        return true;
+        return false;
+    }
+
+    /// <summary>Записывает команду автозапуска; null — удалить запись.</summary>
+    public static void SetRegisteredCommand(string? command)
+    {
+        using RegistryKey key = Registry.CurrentUser.CreateSubKey(RunKeyPath, writable: true)
+            ?? throw new InvalidOperationException("Не удалось открыть ключ автозапуска.");
+
+        if (string.IsNullOrEmpty(command))
+        {
+            key.DeleteValue(ValueName, throwOnMissingValue: false);
+        }
+        else
+        {
+            key.SetValue(ValueName, command, RegistryValueKind.String);
+        }
     }
 
     public static string GetExecutablePath() => Environment.ProcessPath ?? Application.ExecutablePath;

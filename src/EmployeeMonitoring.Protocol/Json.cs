@@ -11,6 +11,8 @@ public static class Json
 
     public static T? Deserialize<T>(byte[] utf8) => JsonSerializer.Deserialize<T>(utf8, Options);
 
+    public static T? Deserialize<T>(string json) => JsonSerializer.Deserialize<T>(json, Options);
+
     public static string SerializeToString<T>(T value) => JsonSerializer.Serialize(value, Options);
 
     public static JsonSerializerOptions CreateOptions(bool indented) => new()

@@ -34,8 +34,7 @@ internal sealed class ClientOptions
         ClientOptions options;
         if (File.Exists(path))
         {
-            string json = File.ReadAllText(path);
-            options = JsonSerializer.Deserialize<ClientOptions>(json, Json.CreateOptions(indented: false)) ?? new ClientOptions();
+            options = ReadOrDefault(path);
         }
         else
         {
@@ -45,6 +44,24 @@ internal sealed class ClientOptions
         options.ConfigPath = path;
         options.Normalize();
         return options;
+    }
+
+    /// <summary>
+    /// Читает конфигурацию; при повреждённом файле агент не падает,
+    /// а работает на значениях по умолчанию (журналирует проблему).
+    /// </summary>
+    private static ClientOptions ReadOrDefault(string path)
+    {
+        try
+        {
+            string json = File.ReadAllText(path);
+            return JsonSerializer.Deserialize<ClientOptions>(json, Json.CreateOptions(indented: false)) ?? new ClientOptions();
+        }
+        catch (Exception ex) when (ex is System.Text.Json.JsonException or IOException or UnauthorizedAccessException)
+        {
+            AgentLog.Error($"Файл конфигурации {path} не удалось прочитать, применяются значения по умолчанию", ex);
+            return new ClientOptions();
+        }
     }
 
     public void Normalize()

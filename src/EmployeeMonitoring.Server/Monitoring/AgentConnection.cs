@@ -13,7 +13,6 @@ internal sealed class AgentConnection : IDisposable
     private readonly Channel<OutgoingFrame> _outgoing;
     private readonly CancellationTokenSource _cts = new();
     private NetworkStream? _stream;
-    private int _commandTimestampsHead;
 
     public AgentConnection(ClientSession session, AgentOptions options, ILogger logger)
     {
@@ -27,7 +26,6 @@ internal sealed class AgentConnection : IDisposable
         });
     }
 
-    private readonly long[] _commandTimestamps = new long[64];
     private long _lastIoTicks = DateTime.UtcNow.Ticks;
 
     public async Task RunAsync(NetworkStream stream, CancellationToken stoppingToken)
@@ -208,7 +206,7 @@ internal sealed class AgentConnection : IDisposable
 
     public async Task<bool> EnqueueAsync(FrameType type, byte[] payload, CancellationToken cancellationToken = default)
     {
-        if (!AllowCommand())
+        if (!_rateLimiter.TryAcquire())
         {
             _logger.LogWarning("Превышен лимит команд к агенту {Machine}", _session.MachineName);
             return false;
@@ -236,27 +234,7 @@ internal sealed class AgentConnection : IDisposable
         }
     }
 
-    private bool AllowCommand()
-    {
-        long now = Environment.TickCount64;
-        int head = _commandTimestampsHead;
-        long windowStart = now - 1000;
-
-        // Ограничение частоты команд: не более N в секунду.
-        int window = Math.Min(ProtocolConstants.MaxCommandsPerSecond, _commandTimestamps.Length);
-        for (int i = 0; i < window; i++)
-        {
-            long value = _commandTimestamps[(head + i) % _commandTimestamps.Length];
-            if (value > windowStart)
-            {
-                return false;
-            }
-        }
-
-        _commandTimestamps[head] = now;
-        _commandTimestampsHead = (head + 1) % _commandTimestamps.Length;
-        return true;
-    }
+    private readonly CommandRateLimiter _rateLimiter = new();
 
     public void Dispose()
     {

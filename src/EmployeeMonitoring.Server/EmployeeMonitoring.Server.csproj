@@ -18,6 +18,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="EmployeeMonitoring.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Панель оператора копируется в выходной каталог, чтобы сервер запускался из любой папки. -->
     <Content Update="wwwroot\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
