@@ -20,6 +20,7 @@ internal sealed class TrayAgent : ApplicationContext
     private readonly ToolStripMenuItem _autostartItem;
     private StatusForm? _statusForm;
     private Task? _runTask;
+    private DateTime? _lastNotificationUtc;
 
     public TrayAgent(ClientOptions options, AgentClient client)
     {
@@ -63,7 +64,28 @@ internal sealed class TrayAgent : ApplicationContext
         _notifyIcon.Text = Truncate(_client.StatusText);
     }
 
-    public void ShowNotification(string text) => RunOnUi(() => Notify("Мониторинг рабочей активности", text));
+    public void ShowNotification(string text, bool urgent)
+    {
+        if (!_options.ShowTrayNotifications)
+        {
+            return;
+        }
+
+        // Уведомления о снимках по расписанию приглушаются, чтобы не заваливать
+        // пользователя всплывающими сообщениями. События по команде оператора
+        // и явные сообщения сервера показываются сразу.
+        if (!urgent)
+        {
+            TimeSpan throttle = TimeSpan.FromMinutes(_options.NotificationThrottleMinutes);
+            if (throttle > TimeSpan.Zero && _lastNotificationUtc is not null && DateTime.UtcNow - _lastNotificationUtc.Value < throttle)
+            {
+                return;
+            }
+        }
+
+        _lastNotificationUtc = DateTime.UtcNow;
+        RunOnUi(() => Notify("Мониторинг рабочей активности", text));
+    }
 
     public void Start()
     {

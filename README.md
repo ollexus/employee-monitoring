@@ -181,6 +181,7 @@ New-NetFirewallRule -DisplayName "Employee Monitoring Dashboard (HTTP 5080)" -Di
 | `CaptureOnStart` | `true` | снимок сразу после подключения |
 | `StartWithWindows` | `true` | включить автозапуск при первом запуске |
 | `ShowTrayNotifications` | `true` | уведомлять пользователя о снимках |
+| `NotificationThrottleMinutes` | `5` | не чаще одного уведомления в N минут (0 — без ограничения; уведомления по команде оператора показываются всегда) |
 | `ReconnectMinSeconds` / `ReconnectMaxSeconds` | `2` / `30` | переподключение с растущей паузой |
 
 Журнал работы агента: `%LOCALAPPDATA%\EmployeeMonitoring\logs\agent-ГГГГММДД.log`.

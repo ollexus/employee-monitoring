@@ -20,7 +20,7 @@ internal sealed class AgentClient : IAsyncDisposable
     private static readonly TimeSpan SessionTeardownTimeout = TimeSpan.FromSeconds(3);
 
     private readonly ClientOptions _options;
-    private readonly Func<string, bool> _notificationSink;
+    private readonly Func<string, bool, bool> _notificationSink;
     private readonly SemaphoreSlim _captureSignal = new(0);
     private readonly Channel<OutgoingFrame> _outgoing;
 
@@ -36,7 +36,7 @@ internal sealed class AgentClient : IAsyncDisposable
     private long _lastIoTicks;
     private long _lastScreenshotTicks;
 
-    public AgentClient(ClientOptions options, Func<string, bool> notificationSink)
+    public AgentClient(ClientOptions options, Func<string, bool, bool> notificationSink)
     {
         _options = options;
         _notificationSink = notificationSink;
@@ -430,7 +430,7 @@ internal sealed class AgentClient : IAsyncDisposable
             Interlocked.Exchange(ref _lastScreenshotTicks, DateTime.UtcNow.Ticks);
             AgentLog.Info($"Снимок экрана отправлен: {meta.Width}x{meta.Height}, {meta.SizeBytes / 1024} КБ" +
                           (byCommand ? " (по команде с сервера)" : string.Empty));
-            _notificationSink("Снимок экрана передан на сервер мониторинга");
+            _notificationSink("Снимок экрана передан на сервер мониторинга", byCommand);
             ScreenshotSent?.Invoke();
         }
 
@@ -485,7 +485,7 @@ internal sealed class AgentClient : IAsyncDisposable
                     break;
 
                 case CommandActions.ShowNotification:
-                    _notificationSink(string.IsNullOrWhiteSpace(command.Text) ? "Сообщение с сервера мониторинга" : command.Text!);
+                    _notificationSink(string.IsNullOrWhiteSpace(command.Text) ? "Сообщение с сервера мониторинга" : command.Text!, true);
                     ack.Success = true;
                     ack.Message = "Уведомление показано";
                     break;

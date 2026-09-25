@@ -134,9 +134,9 @@ internal static class Program
 
             TrayAgent? tray = null;
 
-            var client = new AgentClient(options, text =>
+            var client = new AgentClient(options, (text, urgent) =>
             {
-                tray?.ShowNotification(text);
+                tray?.ShowNotification(text, urgent);
                 return true;
             });
 
@@ -154,7 +154,7 @@ internal static class Program
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         try
         {
-            var client = new AgentClient(options, static _ => false);
+            var client = new AgentClient(options, static (_, _) => false);
             Task run = client.RunAsync(cts.Token);
 
             // Ожидаем именно фактической отправки снимка, а не только его подготовки.

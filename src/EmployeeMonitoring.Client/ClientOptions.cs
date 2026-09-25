@@ -20,6 +20,10 @@ internal sealed class ClientOptions
     public bool CaptureOnStart { get; set; } = true;
     public bool StartWithWindows { get; set; } = true;
     public bool ShowTrayNotifications { get; set; } = true;
+
+    /// <summary>Минимальный интервал между уведомлениями о снимках по расписанию (0 — без ограничения).</summary>
+    public int NotificationThrottleMinutes { get; set; } = 5;
+
     public bool SendLogMessages { get; set; } = true;
 
     public int ConnectTimeoutSeconds { get; set; } = 10;
@@ -80,6 +84,7 @@ internal sealed class ClientOptions
         CaptureIntervalSeconds = Math.Clamp(CaptureIntervalSeconds, 10, 3600);
         MaxScreenshotWidth = Math.Clamp(MaxScreenshotWidth, 320, 7680);
         JpegQuality = Math.Clamp(JpegQuality, 10, 100);
+        NotificationThrottleMinutes = Math.Clamp(NotificationThrottleMinutes, 0, 60);
         ConnectTimeoutSeconds = Math.Clamp(ConnectTimeoutSeconds, 3, 120);
         ReconnectMinSeconds = Math.Clamp(ReconnectMinSeconds, 1, 60);
         ReconnectMaxSeconds = Math.Clamp(ReconnectMaxSeconds, ReconnectMinSeconds, 600);

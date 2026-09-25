@@ -213,7 +213,8 @@ public static class ClientTests
             JpegQuality = 500,
             ConnectTimeoutSeconds = 0,
             ReconnectMinSeconds = 100,
-            ReconnectMaxSeconds = 5
+            ReconnectMaxSeconds = 5,
+            NotificationThrottleMinutes = 999
         };
 
         options.Normalize();
@@ -225,7 +226,16 @@ public static class ClientTests
         Assert.Equal(320, options.MaxScreenshotWidth);
         Assert.Equal(100, options.JpegQuality);
         Assert.Equal(3, options.ConnectTimeoutSeconds);
+        Assert.Equal(60, options.NotificationThrottleMinutes, "интервал уведомлений ограничивается сверху");
         Assert.True(options.ReconnectMaxSeconds >= options.ReconnectMinSeconds, "верхняя пауза не должна быть меньше нижней");
+    }
+
+    [Test]
+    public static void NotificationThrottleCanBeDisabled()
+    {
+        var options = new ClientOptions { NotificationThrottleMinutes = -5 };
+        options.Normalize();
+        Assert.Equal(0, options.NotificationThrottleMinutes, "отрицательное значение превращается в «без ограничения»");
     }
 
     [Test]
