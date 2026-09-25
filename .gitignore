@@ -1,0 +1,23 @@
+## Visual Studio / .NET
+[Bb]in/
+[Oo]bj/
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+artifacts/
+
+## Rider
+_ReSharper*/
+*.DotSettings.user
+
+## Logs and runtime data
+*.log
+logs/
+
+## OS
+Thumbs.db
+Desktop.ini
+.DS_Store

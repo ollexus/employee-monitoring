@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>EmployeeMonitoring.Server</RootNamespace>
+    <AssemblyName>EmployeeMonitoring.Server</AssemblyName>
+    <Product>Сервер мониторинга рабочей активности</Product>
+    <Version>1.0.0</Version>
+    <AssemblyVersion>1.0.0.0</AssemblyVersion>
+    <FileVersion>1.0.0.0</FileVersion>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\EmployeeMonitoring.Protocol\EmployeeMonitoring.Protocol.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Панель оператора копируется в выходной каталог, чтобы сервер запускался из любой папки. -->
+    <Content Update="wwwroot\**\*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+  </ItemGroup>
+
+</Project>
