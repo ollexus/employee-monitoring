@@ -221,6 +221,7 @@ internal sealed class AgentConnection : IDisposable
         return true;
     }
 
+    /// <summary>Просит закрыть соединение: цикл чтения прерывается, агент переподключится сам.</summary>
     public void RequestDisconnect(string reason)
     {
         _logger.LogInformation("Отключение агента {Machine}: {Reason}", _session.MachineName, reason);

@@ -121,6 +121,14 @@ public static class ServerStateTests
     }
 
     [Test]
+    public static void DisconnectWithoutConnectionIsReported()
+    {
+        var session = new ClientSession(CreateAuth(), "10.0.0.5");
+
+        Assert.False(session.Disconnect("проверка"), "у неподключённого агента нечего разрывать");
+    }
+
+    [Test]
     public static void MissingClientIdIsReplaced()
     {
         AuthRequest auth = CreateAuth(clientId: "   ");

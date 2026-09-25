@@ -124,9 +124,18 @@ app.MapPost("/api/clients/{clientId}/command", async (
 });
 
 app.MapDelete("/api/clients/{clientId}", (string clientId, ClientRegistry registry) =>
-    registry.Remove(clientId)
-        ? Results.Ok(new { message = "Агент удалён из списка" })
-        : Results.NotFound(new { message = "Агент не найден" }));
+{
+    ClientSession? session = registry.Find(clientId);
+    if (session is null)
+    {
+        return Results.NotFound(new { message = "Агент не найден" });
+    }
+
+    // Разрываем сессию, чтобы агент переподключился и снова появился в списке.
+    session.Disconnect("удалён оператором из списка");
+    registry.Remove(clientId);
+    return Results.Ok(new { message = "Агент удалён из списка и вернётся после переподключения" });
+});
 
 app.MapFallback(async context =>
 {

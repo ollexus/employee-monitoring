@@ -286,6 +286,69 @@ public static class AgentGatewayIntegrationTests
         }
     }
 
+    [Test]
+    public static async Task RemovedAgentReconnectsAndAppearsAgain()
+    {
+        int port = GetFreePort();
+        var registry = new ClientRegistry();
+        AgentGateway gateway = await StartGatewayAsync(registry, CreateOptions(port));
+
+        try
+        {
+            string clientId;
+            await using (FakeAgent agent = await FakeAgent.ConnectAsync(port, "PC-REMOVED", "removed"))
+            {
+                Assert.True(await WaitUntilAsync(() => registry.Snapshots().Any(s => s.IsOnline)));
+                clientId = registry.Snapshots().Single(s => s.IsOnline).ClientId;
+            }
+
+            // Действие панели «Удалить»: разрыв сессии и удаление записи из реестра.
+            ClientSession session = registry.Find(clientId)!;
+            Assert.True(session.Disconnect("удаление из списка"), "сервер должен разорвать сессию удаляемого агента");
+            registry.Remove(clientId);
+
+            Assert.True(await WaitUntilAsync(() => registry.Find(clientId) is null || !registry.Find(clientId)!.IsOnline),
+                "удалённый агент не должен оставаться в списке как подключённый");
+
+            // Агент переподключается сам и снова попадает в реестр.
+            await using FakeAgent reconnected = await FakeAgent.ConnectAsync(port, "PC-REMOVED", "removed");
+            Assert.True(await WaitUntilAsync(() => registry.Snapshots().Any(s => s.IsOnline)),
+                "после переподключения агент должен снова появиться в списке");
+            Assert.Equal("PC-REMOVED", registry.Snapshots().Single(s => s.IsOnline).MachineName);
+        }
+        finally
+        {
+            await gateway.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
+    [Test]
+    public static async Task ServerDisconnectsAgentOnRequest()
+    {
+        int port = GetFreePort();
+        var registry = new ClientRegistry();
+        AgentGateway gateway = await StartGatewayAsync(registry, CreateOptions(port));
+
+        try
+        {
+            await using FakeAgent agent = await FakeAgent.ConnectAsync(port, "PC-KICK", "kick");
+            Assert.True(await WaitUntilAsync(() => registry.Snapshots().Any(s => s.IsOnline)));
+
+            ClientSession session = registry.Snapshots().Any(s => s.IsOnline)
+                ? registry.Find(registry.Snapshots().First(s => s.IsOnline).ClientId)!
+                : throw new AssertionException("агент не найден в реестре");
+
+            Assert.True(session.Disconnect("проверка разрыва"));
+            Assert.True(await WaitUntilAsync(() => registry.Snapshots().All(s => !s.IsOnline)),
+                "после разрыва сессии агент должен считаться отключённым");
+            Assert.Equal(0, gateway.ActiveConnections);
+        }
+        finally
+        {
+            await gateway.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+    }
+
     private static async Task<bool> snapshotIsSendable(ClientRegistry registry, string clientId)
     {
         ClientSession? session = registry.Find(clientId);

@@ -122,6 +122,27 @@ public sealed class ClientSession
         }
     }
 
+    /// <summary>
+    /// Просит разорвать текущее соединение агента. Агент переподключится автоматически
+    /// и снова появится в списке — это нужно оператору при удалении записи из панели.
+    /// </summary>
+    public bool Disconnect(string reason)
+    {
+        AgentConnection? connection;
+        lock (_sync)
+        {
+            connection = _connection;
+        }
+
+        if (connection is null)
+        {
+            return false;
+        }
+
+        connection.RequestDisconnect(reason);
+        return true;
+    }
+
     internal void Detach(AgentConnection connection)
     {
         lock (_sync)

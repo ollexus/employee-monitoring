@@ -13,8 +13,18 @@ internal static class Program
     {
         try
         {
+            var arguments = CommandLineArguments.Parse(args);
+
+            // Служебные ключи работают как у обычной консольной программы: подключаем
+            // консоль родительского процесса, иначе вывод WinExe теряется.
+            bool needsConsole = arguments.ShowHelp || arguments.InstallAutostart || arguments.UninstallAutostart || arguments.CaptureOnce;
+            if (needsConsole)
+            {
+                ConsoleBridge.AttachToParent();
+            }
+
             Console.OutputEncoding = Encoding.UTF8;
-            return Run(args);
+            return Run(arguments);
         }
         catch (Exception ex)
         {
@@ -34,10 +44,8 @@ internal static class Program
         }
     }
 
-    private static int Run(string[] args)
+    private static int Run(CommandLineArguments arguments)
     {
-        var arguments = CommandLineArguments.Parse(args);
-
         if (arguments.ShowHelp)
         {
             PrintUsage();
